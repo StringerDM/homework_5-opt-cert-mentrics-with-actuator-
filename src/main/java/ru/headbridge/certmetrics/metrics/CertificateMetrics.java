@@ -1,76 +1,49 @@
 package ru.headbridge.certmetrics.metrics;
 
 import io.micrometer.common.lang.NonNull;
-import io.micrometer.core.annotation.Timed;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Tags;
+import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.binder.MeterBinder;
 import lombok.AllArgsConstructor;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.io.FileInputStream;
-import java.security.KeyStore;
-import java.security.cert.Certificate;
-import java.security.cert.X509Certificate;
-import java.util.*;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Component
 @AllArgsConstructor
 public class CertificateMetrics implements MeterBinder {
 
+    private final CertificateLoader certLoader;
+    private final MeterRegistry registry;
+
     @Override
-    @Timed
     public void bindTo(@NonNull MeterRegistry registry) {
-        List<CertificateInfo> certificates = loadCertificates();
-        for (CertificateInfo cert : certificates) {
-            AtomicInteger daysLeft = new AtomicInteger(cert.daysLeft());
-            Gauge.builder("certificate.days.left", daysLeft, AtomicInteger::get)
-                    .tags(Tags.of("certificate", cert.name()))
-                    .description("Days left")
-                    .register(registry);
-        }
+        refreshMetrics();
     }
 
-    private List<CertificateInfo> loadCertificates() {
-        try {
-            KeyStore keyStore = loadKeyStore(System.getProperty("java.home") + "/lib/security/cacerts", "changeit");
-            return extractCertificateInfo(keyStore);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-//            e.fillInStackTrace();
-//            return Collections.emptyList();
-        }
+    @Scheduled(cron = "0 0 0 * * ?")
+    public void refreshMetrics() {
+        registry.getMeters().stream()
+                .filter(meter -> "certificate.daysLeft".equals(meter.getId().getName()))
+                .findFirst()
+                .ifPresent(registry::remove);
+
+        Integer size = certLoader.loadCertificates();
+        List<Tag> tags = getTags(certLoader.getCertInfos());
+
+        Gauge.builder("certificate.daysLeft", () -> size)
+                .description("Days left")
+                .baseUnit("days")
+                .tags(tags)
+                .register(registry);
     }
 
-    private KeyStore loadKeyStore(String keystorePath, String keystorePassword) throws Exception {
-        KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-        try (FileInputStream fis = new FileInputStream(keystorePath)) {
-            keyStore.load(fis, keystorePassword.toCharArray());
-        }
-        return keyStore;
-    }
-
-    private List<CertificateInfo> extractCertificateInfo(KeyStore keyStore) throws Exception {
-        List<CertificateInfo> certificateInfoList = new ArrayList<>();
-        Enumeration<String> aliases = keyStore.aliases();
-
-        while (aliases.hasMoreElements()) {
-            String alias = aliases.nextElement();
-            Certificate cert = keyStore.getCertificate(alias);
-            if (cert instanceof X509Certificate x509Cert) {
-                String name = x509Cert.getSubjectX500Principal().getName();
-                long daysLeft = getDaysLeft(x509Cert.getNotAfter());
-                certificateInfoList.add(new CertificateInfo(name, (int) daysLeft));
-            }
-        }
-        return certificateInfoList;
-    }
-
-    private long getDaysLeft(Date expirationDate) {
-        long diffInMillies = expirationDate.getTime() - System.currentTimeMillis();
-        return TimeUnit.DAYS.convert(diffInMillies, TimeUnit.MILLISECONDS);
+    private List<Tag> getTags(List<CertificateInfo> certificateInfos) {
+        return certificateInfos.stream()
+                .map(cert -> Tag.of(cert.name(), cert.daysLeft() + ""))
+                .collect(Collectors.toList());
     }
 }
