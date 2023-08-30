@@ -9,6 +9,7 @@ import lombok.AllArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -24,7 +25,7 @@ public class CertificateMetrics implements MeterBinder {
         refreshMetrics();
     }
 
-    @Scheduled(cron = "0 0 0 * * ?")
+    @Scheduled(cron = "@midnight")
     public void refreshMetrics() {
         registry.getMeters().stream()
                 .filter(meter -> "certificate.daysLeft".equals(meter.getId().getName()))
@@ -37,6 +38,7 @@ public class CertificateMetrics implements MeterBinder {
         Gauge.builder("certificate.daysLeft", () -> size)
                 .description("Days left")
                 .baseUnit("days")
+                .tag("Last update", LocalDateTime.now().toString())
                 .tags(tags)
                 .register(registry);
     }
